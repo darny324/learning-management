@@ -6,7 +6,7 @@ import { PoolClient } from "pg";
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt'
 
-type Student = {
+type User = {
     user_id: string, 
     first_name: string,
     last_name: string, 
@@ -23,9 +23,9 @@ type Student = {
     updated_at: string,
 }
 
-type MultipleStudentResponse = NormalResponse & {students?: Student[] | null};
-type SingleStudentResponse = NormalResponse & {student?: Student | {} | null};
-type StudentRequest = {
+type MultipleUserResponse = NormalResponse & {users?: User[] | null};
+type SingleUserResponse = NormalResponse & {user?: User | {} | null};
+type UserRequest = {
     first_name: string | null | undefined,
     last_name: string | null | undefined, 
     type_of_user: 'student' | 'teacher' | null | undefined,
@@ -40,24 +40,90 @@ type StudentRequest = {
     address: {x:number, y:number} | null | undefined, 
 };
 
+type QueryType = {
+    name: string | undefined, 
+    sort: string | undefined, 
+    page: number | undefined, 
+    limit: number | undefined, 
+    interests: string | undefined, 
+    type_of_user: 'teacher' | 'student' | undefined, 
+};
 
 
-const getAllStudents = async (req:Request, res:Response<MultipleStudentResponse>):Promise<void> => {
+const getAllUsers = async (
+    req:Request<any, any, any, QueryType>, 
+    res:Response<any>
+):Promise<void> => {
+    const {
+        name, 
+        sort, 
+        page, 
+        limit, 
+        interests, 
+        type_of_user, 
+    } = req.query as QueryType;
+
+    const page_num = page ? page : 1;
+    const limit_num = limit ? limit : 10;
+    const offset = (page_num - 1) * limit_num;
+    let sortClause = '';
+    let searchClause = '';
+    const searchFields:string[] = [];
+    
+    if ( sort ){
+        sortClause = `ORDER BY ${sort}`;
+    }
+    if ( name ) {
+        searchFields.push(`LOWER(first_name || ' ' || last_name) LIKE '%${name.toLocaleLowerCase()}%'`);
+    }
+    if ( interests ){
+        searchFields.push(`interests = '${interests}'`);
+    }
+    if ( type_of_user ){
+        searchFields.push(`type_of_user = '${type_of_user}'`)
+    }
+    if ( searchFields.length > 0 ){
+        searchClause = 'WHERE ' + searchFields.join(' AND ');
+    }
+    
     try {
-        const result = await pool.query('something');
+        const result = await pool.query(`
+        SELECT 
+            user_id, 
+            first_name || ' ' || last_name AS full_name,
+            email, 
+            interests, 
+            type_of_user, 
+            profile_image
+        FROM users ${searchClause} ${sortClause} LIMIT $1 OFFSET $2;
+        `, [limit_num, offset]);
+
+        
+        const users = result.rows;
+        res.status(200).json({
+            status:true, 
+            message: "Success", 
+            users
+        });
+        
     } catch (err) {
+        let status_code:number = 400;
+        let message:string = "Error in fetching users";
         if ( err instanceof Error ){
             console.log(err.message + " => ", err);
-            res.status(400).json({
-                status: false, 
-                message: "success", 
-                students: [],  
-            });
+            message = err.message;
+        } else {
+            console.log("Error in fetching users => ", err);
         }
+
+        res.status(status_code).json({
+            status: false, 
+            message: message, 
+        });
     }
 }
 
-const addStudent = async (req:Request<any, any, StudentRequest>, res:Response<SingleStudentResponse>):Promise<void> => {
+const addUser = async (req:Request<any, any, UserRequest>, res:Response<SingleUserResponse>):Promise<void> => {
     const {
         first_name, 
         last_name, 
@@ -71,7 +137,7 @@ const addStudent = async (req:Request<any, any, StudentRequest>, res:Response<Si
         address, 
         age, 
         gender,
-    } = req.body as StudentRequest;
+    } = req.body as UserRequest;
 
     console.log(phone_num);
     const client:PoolClient = await pool.connect();
@@ -136,28 +202,27 @@ const addStudent = async (req:Request<any, any, StudentRequest>, res:Response<Si
     }
 }
 
-const getStudent = async (req:Request<{student_id:string}>, res:Response<SingleStudentResponse>):Promise<void> => {
-    const {student_id} = req.params;
+const getUser = async (req:Request<{user_id:string}>, res:Response<SingleUserResponse>):Promise<void> => {
+    const {user_id} = req.params;
 
     try {
-        if ( !student_id )
+        if ( !user_id )
             throw new CustomError('Invalid Student Id', 400);
 
-        const result = await pool.query<Student>(`
+        const result = await pool.query<User>(`
         SELECT 
         u.*
         FROM users u
         WHERE u.user_id = $1;
-        `, [student_id]);
+        `, [user_id]);
         if ( result.rowCount === 0){
-            throw new CustomError('User Not Found with id: ' + student_id, 400);
+            throw new CustomError('User Not Found with id: ' + user_id, 400);
         }
-        const student = result.rows[0] as Student;
-        console.log(student);
+        const student = result.rows[0] as User;
         res.status(200).json({
             message: "Success", 
             status: true, 
-            student: student, 
+            user: student, 
         })
     } catch (err){
         if ( err instanceof Error ){
@@ -177,9 +242,9 @@ const getStudent = async (req:Request<{student_id:string}>, res:Response<SingleS
     }
 }
 
-const updateStudent = async (
-    req:Request<{student_id:string}, any, StudentRequest | null | undefined>, 
-    res:Response<SingleStudentResponse>
+const updateUser = async (
+    req:Request<{user_id:string}, any, UserRequest | null | undefined>, 
+    res:Response<SingleUserResponse>
 ):Promise<void> => {
     if ( !req.body ){
         res.status(400).json({
@@ -188,7 +253,7 @@ const updateStudent = async (
         })
         return;
     }
-    const {student_id} = req.params;
+    const {user_id} = req.params;
     const {
         first_name, 
         last_name, 
@@ -258,18 +323,18 @@ const updateStudent = async (
 
     
     try {
-        const result = await pool.query<Student>(`
-        UPDATE users SET ${fieldQuery}, updated_at = NOW() WHERE user_id = '${student_id}' RETURNING *;
+        const result = await pool.query<User>(`
+        UPDATE users SET ${fieldQuery}, updated_at = NOW() WHERE user_id = '${user_id}' RETURNING *;
         `, values);
         if ( result.rowCount === 0){
             throw new CustomError("Updating User Failed or Invalid user_id", 500);
         }
         
-        const student = result.rows[0];
+        const user = result.rows[0];
         res.status(200).json({
             message: "Success", 
             status: true, 
-            student: student,
+            user: user,
         });
     } catch (err){
         if ( err instanceof Error ){
@@ -291,35 +356,35 @@ const updateStudent = async (
 }
 
 const changePassword = async (
-    req:Request<{student_id:string}, any, {old_password: string, new_password:string} | null | undefined>,
-    res:Response<SingleStudentResponse> 
+    req:Request<{user_id:string}, any, {old_password: string, new_password:string} | null | undefined>,
+    res:Response<SingleUserResponse> 
 ):Promise<void> => {
     if ( !req.body ){
         throw new CustomError("No New Password is provided", 400);
     }
-    const {student_id} = req.params;
+    const {user_id} = req.params;
     const {old_password, new_password} = req.body;
 
     try {
         const result = await pool.query<{password:string}>(`
             SELECT password FROM users WHERE user_id = $1
-            `, [student_id]);
+            `, [user_id]);
         if ( result.rowCount === 0){
             throw new CustomError('No User Found or Error in Changing Password', 404);
         }
         const original_password = result.rows[0].password;
         const check = await bcrypt.compare(old_password, original_password);
         if ( check ){
-            const result2 = await pool.query<Student>(`
+            const result2 = await pool.query<User>(`
             UPDATE users SET password = $1 WHERE user_id = $2 RETURNING *;
-            `, [new_password, student_id]);
+            `, [new_password, user_id]);
             if ( result2.rowCount === 0){
                 throw new CustomError("Error in Changing Password", 500);
             }
             res.status(200).json({
-                message: "success", 
+                message: "success",
                 status: true, 
-                student: result2.rows[0],
+                user: result2.rows[0],
             })
         } else {
             throw new CustomError("Password Incorrect", 400);
@@ -342,4 +407,37 @@ const changePassword = async (
     }
 }
 
-export {addStudent, getAllStudents, getStudent, updateStudent, changePassword};
+
+const deleteUser = async (
+    req:Request<{user_id:string}>, 
+    res:Response<NormalResponse>
+):Promise<void> => {
+    const {user_id} = req.params;
+
+    try {
+        await pool.query(`
+        DELETE FROM users WHERE user_id = $1;
+        `, [user_id]); 
+
+        res.status(200).json({
+            status: true, 
+            message: "User deletion successful",
+        });
+    } catch (err) {
+        if ( err instanceof Error ){
+            console.log("Error in deleting user", err.message, err);
+            res.status(500).json({
+                status: false, 
+                message: err.message, 
+            })
+        } else {
+            console.log("Error in Deleting user", err);
+            res.status(500).json({
+                status: false, 
+                message: "Error in deleting user", 
+            })
+        }
+    }
+} 
+
+export {addUser, getAllUsers, getUser, updateUser, changePassword, deleteUser};

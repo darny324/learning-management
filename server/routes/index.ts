@@ -1,9 +1,9 @@
-import StudentRouter from './students'
-import TeacherRouter from './teachers'
+import UserRouter from './users'
 import TestRouter from './tests'
 import EnrollmentRouter from './enrollments'
 import CourseRouter from './courses'
 import ModuleRouter from './modules'
 import ChatRouter from './chat'
+import AuthorizedRouter from './authorized-user';
 
-export {StudentRouter, TeacherRouter, TestRouter, EnrollmentRouter, CourseRouter, ModuleRouter, ChatRouter};
+export {UserRouter, TestRouter, EnrollmentRouter, CourseRouter, ModuleRouter, ChatRouter, AuthorizedRouter};

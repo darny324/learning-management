@@ -137,6 +137,16 @@ CREATE TABLE IF NOT EXISTS messages (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS friendships (
+    friendship_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id1 UUID REFERENCES users(user_id), 
+    user_id2 UUID REFERENCES users(user_id), 
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
+    UNIQUE (user_id1, user_id2)
+);
+
+
 
 
 COMMIT;
