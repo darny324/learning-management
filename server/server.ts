@@ -30,7 +30,7 @@ app.get('/', (req, res) => {
 
 app.use('/api/v1/learning-management/users', UserRouter);
 app.use('/api/v1/learning-management/courses', CourseRouter);
-app.use('/api/v1/learning-management/courses/:courseId/modules', ModuleRouter);
+app.use('/api/v1/learning-management/courses/:course_id/modules', ModuleRouter);
 app.use('/api/v1/learning-management/tests', TestRouter);
 app.use('/api/v1/learning-management/enrollments', EnrollmentRouter);
 app.use('/api/v1/learning-management/chats', ChatRouter);

@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS courses (
 
 CREATE TABLE IF NOT EXISTS modules (
     module_id SERIAL PRIMARY KEY, 
-    course_id UUID REFERENCES courses(course_id) ON DELETE CASCADE, 
+    course_id UUID REFERENCES courses(course_id) ON DELETE CASCADE NOT NULL, 
     module_title VARCHAR(100) NOT NULL, 
     description TEXT, 
     order_num INTEGER, 
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS questions (
     test_id INTEGER REFERENCES tests (test_id) ON DELETE CASCADE,
     question TEXT NOT NULL, 
     answers TEXT[] NOT NULL, 
-    correct_answer INTEGER NOT NULL CHECK (correct_answer >= 1), 
+    correct_answer INTEGER NOT NULL CHECK (correct_answer >= 0), 
     explanation TEXT
 );
 

@@ -15,6 +15,10 @@ type User = {
     age: number, 
     gender: 'male' | 'female', 
     email: string, 
+    courses?: [], 
+    num_enrollments?: number, 
+    num_friends?: number, 
+    num_finished_courses?: number,
     phone_num: string, 
     bios: string, 
     interests: string, 
@@ -24,7 +28,7 @@ type User = {
 }
 
 type MultipleUserResponse = NormalResponse & {users?: User[] | null};
-type SingleUserResponse = NormalResponse & {user?: User | {} | null};
+type SingleUserResponse = NormalResponse & {user?: User | null};
 type UserRequest = {
     first_name: string | null | undefined,
     last_name: string | null | undefined, 
@@ -47,6 +51,7 @@ type QueryType = {
     limit: number | undefined, 
     interests: string | undefined, 
     type_of_user: 'teacher' | 'student' | undefined, 
+    fields: string | undefined, 
 };
 
 
@@ -60,7 +65,8 @@ const getAllUsers = async (
         page, 
         limit, 
         interests, 
-        type_of_user, 
+        type_of_user,
+        fields, 
     } = req.query as QueryType;
 
     const page_num = page ? page : 1;
@@ -69,6 +75,7 @@ const getAllUsers = async (
     let sortClause = '';
     let searchClause = '';
     const searchFields:string[] = [];
+    const columns:string = fields || '*';
     
     if ( sort ){
         sortClause = `ORDER BY ${sort}`;
@@ -89,12 +96,7 @@ const getAllUsers = async (
     try {
         const result = await pool.query(`
         SELECT 
-            user_id, 
-            first_name || ' ' || last_name AS full_name,
-            email, 
-            interests, 
-            type_of_user, 
-            profile_image
+            ${columns}
         FROM users ${searchClause} ${sortClause} LIMIT $1 OFFSET $2;
         `, [limit_num, offset]);
 
@@ -202,18 +204,88 @@ const addUser = async (req:Request<any, any, UserRequest>, res:Response<SingleUs
     }
 }
 
-const getUser = async (req:Request<{user_id:string}>, res:Response<SingleUserResponse>):Promise<void> => {
+const getUser = async (
+    req:Request<{user_id:string}, any, any, 
+    {
+        show_courses: string | undefined, 
+        show_num_finished_courses: string | undefined, 
+        show_num_enrollments: string | undefined, 
+        show_num_friends: string | undefined, 
+        fields: string | undefined, 
+    }
+    >, 
+    res:Response<SingleUserResponse>
+):Promise<void> => {
     const {user_id} = req.params;
-
+    const {
+        show_courses, 
+        show_num_finished_courses, 
+        show_num_enrollments, 
+        show_num_friends, 
+        fields, 
+    } = req.query;
+    const selectFields:string[] = [];
+    const joinFields:string[] = [];
+    const starterField:string = fields || `
+    u.user_id, 
+    u.type_of_user, 
+    u.first_name, 
+    u.last_name, 
+    u.email, 
+    u.phone_num, 
+    u.address, 
+    u.profile_image, 
+    u.bios, 
+    u.interests, 
+    u.created_at, 
+    u.updated_at
+    `;
+    if ( show_courses === 'true'){
+        selectFields.push(`
+        ${show_num_enrollments === 'true' ? 'COUNT(e.enrollment_id) AS num_enrollments, ' : ''}
+        COALESCE(json_agg(
+            jsonb_build_object(
+                'course_id', c.course_id, 
+                'title', c.title, 
+                'category', c.category, 
+                'level', c.level, 
+                'thumbnail_url', c.thumbnail_url
+            )
+        ), '[]'::json) AS courses
+        `);
+        joinFields.push(`
+        LEFT JOIN enrollments e ON e.student_id = u.user_id    
+        LEFT JOIN courses c ON c.course_id = e.course_id
+        `);
+    }
+    if ( show_num_finished_courses){
+        selectFields.push(`
+        COUNT(fc.course_id) AS num_finished_courses
+        `);
+        joinFields.push(`
+        LEFT JOIN finished_courses fc ON fc.user_id = u.user_id    
+        `);
+    }
+    if ( show_num_friends ){
+        selectFields.push(`
+        COUNT(f.course_id) AS num_friends
+        `);
+        joinFields.push(`
+        LEFT JOIN friendships f ON u.user_id IN (f.user_id1, f.user_id2)    
+        `);
+    }
+    const selectClause:string = selectFields.length > 0 ? starterField + ', ' +  selectFields.join(', ') : starterField;
+    const joinClause:string = joinFields.join(' ');
     try {
         if ( !user_id )
             throw new CustomError('Invalid Student Id', 400);
 
         const result = await pool.query<User>(`
         SELECT 
-        u.*
+        ${selectClause}
         FROM users u
-        WHERE u.user_id = $1;
+        ${joinClause}
+        WHERE u.user_id = $1 GROUP BY u.user_id;
         `, [user_id]);
         if ( result.rowCount === 0){
             throw new CustomError('User Not Found with id: ' + user_id, 400);

@@ -55,6 +55,7 @@ const getAllCourses = async (
         page: number | undefined, 
         limit: number | undefined, 
         fields: string | undefined, 
+        user_id: string | undefined, 
     }
     >, 
     res:Response<CourseResponseArr>
@@ -71,7 +72,8 @@ const getAllCourses = async (
         sort,
         page, 
         limit, 
-        fields
+        fields,
+        user_id
     } = req.query;
     const searchFields:string[] = [];
     if ( title ){
@@ -94,16 +96,18 @@ const getAllCourses = async (
     if ( language ){
         searchFields.push(`language = '${language}'`);
     }
+    if ( user_id ){
+        searchFields.push(`user_id = '${user_id}'`);
+    }
 
     
     const searchClause:string = searchFields.length ? "WHERE " + searchFields.join(' AND ') : '';
-    const sortClause:string = `ORDER BY ${sort || 'created_at'}`;
+    const sortClause:string = `ORDER BY ${sort || 'c.created_at'}`;
     const field_str:string = fields || 'c.*';
     const page_num = page || 1;
     const limit_num = limit || 10;
     const offset = (page_num - 1) * limit_num;
     try {
-        console.log(searchClause);
         const result = await pool.query<Course>(`
             SELECT 
                 ${field_str},
