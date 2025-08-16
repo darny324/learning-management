@@ -10,16 +10,18 @@ type Resource = {
     text_url: string | null | undefined, 
 }
 
+type Question = {
+    question: string | undefined | null, 
+    correct_answer: number | undefined | null, 
+    answers: string[] | undefined | null, 
+    question_id?: number | null | undefined, 
+    explanation: string | null | undefined
+}
+
 type Test = {
     test_id: number | undefined, 
     order_num: number | undefined, 
-    questions: {
-        question: string | undefined | null, 
-        correct_answer: number | undefined | null, 
-        answers: string[] | undefined | null, 
-        question_id: number | null | undefined, 
-        explanation: string | null | undefined
-    }[], 
+    questions?: Question[] | null | undefined, 
 }
 
 type Module = {
@@ -42,12 +44,13 @@ type ResponseModule = NormalResponse & {module?:Module | null};
 type ResponseModuleArr = NormalResponse & {modules?:Module[] | null};
 
 
-const getOrderNum = async (after_order_num:number | null, course_id:string, module_id:string):Promise<{order_num:number, reorder:boolean}> => {
+const getOrderNum = async (after_order_num:number | null | undefined, course_id:string, module_id:string, type:'resources' | 'tests' = 'resources'):Promise<{order_num:number, reorder:boolean}> => {
 
     let num:number = 10;
-    const order_res = await pool.query<{order_num:number, resource_id:number}>(`
-    SELECT order_num, resource_id 
-    FROM resources 
+    const from_tabe = type === 'resources' ? 'resources' : 'tests';
+    const order_res = await pool.query<{order_num:number}>(`
+    SELECT order_num
+    FROM ${from_tabe} 
     WHERE course_id = $1 AND module_id = $2
     ORDER BY order_num;
     `, [course_id, module_id]);
@@ -57,7 +60,7 @@ const getOrderNum = async (after_order_num:number | null, course_id:string, modu
     if ( resourceCount === 0 ){
         num = 10;
     }
-    else if ( after_order_num === null ){
+    else if ( after_order_num === null || after_order_num === undefined ){
         num = resources[resources.length - 1].order_num + 10;
     }
     else if ( after_order_num === 0){
@@ -76,7 +79,7 @@ const getOrderNum = async (after_order_num:number | null, course_id:string, modu
             }
         }
         if ( temp_order === -1)
-            num = after_order_num + 10;
+            num = resources[resources.length - 1].order_num + 10;
         else {
             num = Math.ceil((after_order_num + temp_order)/2);
             if ( num === temp_order )reorder = true;
@@ -229,8 +232,8 @@ const getModule = async (
         FROM tests t
         INNER JOIN questions q ON t.test_id = q.test_id 
         WHERE course_id = $1 AND module_id = $2
-        GROUP BY test_id;
-        `);
+        GROUP BY t.test_id;
+        `, [course_id, module_id]);
 
         const {rows:tests, rowCount:testCount} = testRes;
         const {rows:resources, rowCount:resourceCount} = resourceRes;
@@ -458,9 +461,16 @@ const addResource = async (
             fields.push(`text_url`);
             values.push(`'${text_url}'`);
         }
+
         const {order_num, reorder} = await getOrderNum(after_order_num, course_id as string, module_id as string);
-            
-        fields.push(`order_num = ${order_num}`);
+        
+        fields.push(`order_num`);
+        values.push(order_num);
+
+        fields.push('course_id');
+        values.push(`'${course_id as string}'`);
+        fields.push('module_id');
+        values.push(module_id as string);
         const fieldClause = fields.join(', ');
         const valueClause = values.join(', ');
 
@@ -479,7 +489,7 @@ const addResource = async (
                 resource_id: number
             }>(`
             SELECT resource_id FROM resources WHERE course_id = $1 AND module_id = $2
-            ORDER BY order_num ASC, updated_at ASC; 
+            ORDER BY order_num ASC; 
             `, [course_id, module_id]);
 
             const {rows:resources} = reorder_res;
@@ -601,20 +611,278 @@ const addTest = async (
     req:Request<{
         course_id: string | undefined, 
         module_id: string | undefined, 
-    }, any, Test>, 
+    }, any, {
+        after_order_num: number | null | undefined, 
+        questions: Question[] | null | undefined 
+    }>, 
     res:Response<NormalResponse>
 ):Promise<void> => {
     const {course_id, module_id} = req.params;
-    const {order_num, questions} = req.body;
+    const {after_order_num, questions} = req.body;
+    
+
+    const client = await pool.connect();
 
     try {
+        if ( questions === null || questions === undefined || questions.length === 0){
+            throw new CustomError('At least one question must be provided', 400);
+        }
+        
+        const questionValues:string[] = [];
+        
+
+        const {order_num, reorder} = await getOrderNum(after_order_num, course_id as string, module_id as string, 'tests');
+        client.query('BEGIN;');
+        const result = await client.query<{test_id:number}>(`
+            INSERT INTO tests(course_id, module_id, order_num)
+            VALUES($1, $2, $3) RETURNING test_id;
+        `, [course_id, module_id, order_num]);
+        const {rows:returnedRows, rowCount} = result;
+
+        if ( reorder ){
+            const reorder_res = await client.query<{
+                test_id: number
+            }>(`
+            SELECT test_id FROM tests WHERE course_id = $1 AND module_id = $2
+            ORDER BY order_num ASC; 
+            `, [course_id, module_id]);
+
+            const {rows:tests} = reorder_res;
+            for ( let i = 0; i < tests.length; i++ ){
+                await client.query(`
+                UPDATE tests SET order_num = $1 
+                WHERE course_id = $2 AND module_id = $3 AND test_id = $4; 
+                `, [(i + 1) * 10, course_id, module_id, tests[i].test_id]);
+            }
+        }
+
+        for ( let i = 0; i < questions.length; i++){
+            if ( !questions[i]){
+                throw new CustomError('Question cannot be empty', 400);
+            }
+
+            const {
+                question, correct_answer, answers, explanation
+            } = questions[i];
+            if ( !question || !correct_answer || !answers){
+                throw new CustomError('Question, correct answer and answers must be provided', 400);
+            }
+            if (  answers.length < 2){
+                throw new CustomError('At least two answers must be provided', 400);
+            }
+            if ( correct_answer < 0 || correct_answer > answers.length - 1){
+                throw new CustomError('Correct answer must be a valid index of answers', 400);
+            }
+            const newAns = answers.map(ans => {
+                return `"${ans}"`;
+            })
+            questionValues.push(`
+                ('${question}', ${correct_answer}, '{${newAns.join(',')}}', ${explanation ? `'${explanation}'` : 'null'}, ${returnedRows[0].test_id}) 
+            `);
+        }
+        const questionClause = questionValues.join(', ');
+        await client.query(`
+        INSERT INTO questions(question, correct_answer, answers, explanation, test_id)
+        VALUES ${questionClause};
+        `);
+
+        res.status(200).json({
+            status:true, 
+            message: 'success', 
+        });
         
     } catch (err){
+        client.query('ROLLBACK;');
+        client.release();
+        let status_code = 404;
+        let message:string = 'Error in adding a test';
+        if ( err instanceof Error ){
+            message = err.message;
+            status_code = err instanceof CustomError ? err.status_code : status_code;
+        }
+        console.log(message, err);
+        res.status(status_code).json({
+            status: false, 
+            message: message, 
+        })
+    }
+}
 
+const getTest = async (
+    req:Request<{
+        course_id: string | null, 
+        module_id: string | null, 
+        test_id: string | null
+    }>, 
+    res:Response<NormalResponse & {test: Test | null}>
+):Promise<void> => {
+    const {course_id, module_id, test_id} = req.params;
+    
+    try {
+        const result = await pool.query<Test>(`
+        SELECT 
+            test_id, order_num 
+        FROM tests 
+        WHERE course_id = $1 AND module_id = $2 AND test_id = $3; 
+        `, [course_id, module_id, test_id]);
+        if ( result.rowCount === 0 ){
+            throw new CustomError('Test not found', 404);
+        }
+
+        const questionRes = await pool.query<Question>(`
+        SELECT 
+            question, correct_answer, answers, question_id, explanation
+        FROM questions
+        WHERE test_id = $1 ORDER BY question_id;
+        `, [test_id]);
+        if ( questionRes.rowCount === 0 ){
+            throw new CustomError('No questions found for this test', 404);
+        }   
+        res.status(200).json({
+            status: true, 
+            message: 'success', 
+            test: {
+                ...result.rows[0], 
+                questions: questionRes.rows, 
+            }
+        })
+    } catch (err){
+        let status_code = 404;
+        let message:string = 'Error in getting a test';
+        if ( err instanceof Error ){
+            message = err.message;
+            status_code = err instanceof CustomError ? err.status_code : status_code;
+        }
+        console.log(message, err);
+        res.status(status_code).json({
+            status: false, 
+            message: message, 
+            test: null, 
+        });
+    }
+}
+
+const updateTest = async (
+    req:Request<{
+        course_id: string | undefined, 
+        module_id: string | undefined, 
+        test_id: string | undefined
+    }, any, {
+        added_questions?: Question[] | null | undefined, 
+        updated_question: {
+            question_id: number | null, 
+            question?: string | null, 
+            correct_answer?: number | null, 
+            answers?: string[] | null, 
+            explanation?:string | null, 
+        } | null | undefined, 
+        deleted_questions?: number[] | null | undefined, 
+
+    }>, 
+    res:Response<NormalResponse>
+):Promise<void> => {
+
+    const {course_id, module_id, test_id} = req.params;
+    const {added_questions, updated_question, deleted_questions} = req.body;
+    const added_question_values:string[] = [];
+    const updated_question_values:string[] = [];
+    
+    try {
+        if ( added_questions ){
+            if ( added_questions.length === 0 ){
+                throw new CustomError('No questions to add', 400);
+            }
+            added_questions.forEach((question) => {
+                const {question:q, correct_answer, answers, explanation} = question;
+                if ( !q || !correct_answer || !answers ){
+                    throw new CustomError('Question, correct answer and answers must be provided', 400);
+                }
+
+                if ( answers.length < 2 ){
+                    throw new CustomError('At least two answers must be provided', 400);
+                }
+                if ( correct_answer < 0 || correct_answer > answers.length - 1){
+                    throw new CustomError('Correct answer must be a valid index of answers', 400);
+                }
+                const newAns = answers.map(ans => {
+                    return `"${ans}"`;
+                });
+                added_question_values.push(`
+                    ('${q}', ${correct_answer}, '{${newAns.join(',')}}', ${explanation ? `'${explanation}'` : 'null'}, ${test_id})
+                `);
+            })
+
+            const addedClause = added_question_values.join(', ');
+            const result = await pool.query(`
+            INSERT INTO questions(question, correct_answer, answers, explanation, test_id)
+            VALUES ${addedClause} RETURNING *;
+            `);
+        }
+
+        if ( updated_question ){
+            const {question_id, question, correct_answer, answers, explanation} = updated_question;
+            if ( !question_id ){
+                throw new CustomError('Question ID must be provided for updating', 400);
+            }
+            if ( question ){
+                updated_question_values.push(`question = '${question}'`);
+            }
+            if ( correct_answer ){
+                updated_question_values.push(`correct_answer = ${correct_answer}`);
+            }
+            if ( answers ){
+                if ( answers.length < 2 ){
+                    throw new CustomError('At least two answers must be provided', 400);
+                }
+                const newAns = answers.map(ans => {
+                    return `"${ans}"`;
+                });
+                updated_question_values.push(`answers = '{${newAns.join(',')}}'`);
+            }
+            if ( explanation ){
+                updated_question_values.push(`explanation = '${explanation}'`);
+            }
+            const updatedClause = updated_question_values.join(', ');
+            if ( updatedClause.length === 0){
+                throw new CustomError('No fields to update', 400);
+            }
+            const result = await pool.query(`
+            UPDATE questions SET ${updatedClause}
+            WHERE question_id = $1 AND test_id = $2; 
+            `, [question_id, test_id]);
+        }
+
+        if (deleted_questions ){
+            if ( deleted_questions.length === 0 ){
+                throw new CustomError('No questions to delete', 400);
+            }
+            const deletedClause = deleted_questions.join(', ');
+            await pool.query(`
+            DELETE FROM questions WHERE question_id IN (${deletedClause}) AND test_id = $1;  
+            `, [test_id]);
+        }
+
+        res.status(200).json({
+            status: true, 
+            message: 'success', 
+        })
+    } catch (err) {
+        let status_code = 404;
+        let message:string = 'Error in getting a test';
+        if ( err instanceof Error ){
+            message = err.message;
+            status_code = err instanceof CustomError ? err.status_code : status_code;
+        }
+        console.log(message, err);
+        res.status(status_code).json({
+            status: false, 
+            message: message, 
+        });
     }
 }
 
 export { 
     getAllModules, addModule, getModule, updateModule, deleteModule, 
-    addResource, updateResource, deleteResource
+    addResource, updateResource, deleteResource, 
+    addTest, getTest, updateTest
 }
