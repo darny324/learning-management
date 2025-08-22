@@ -15,7 +15,7 @@ type Course = {
     duration: number, 
     language: string, 
     thumbnail_url: string, 
-    modules?: [] | null, 
+    modules?: any[] | null, 
     teacher_name?: string | null, 
     teacher_profile_image: string | null, 
     created_at: string, 
@@ -247,7 +247,7 @@ const addCourse = async (
 }
 
 const getCourse = async (
-    req:Request<{course_id:string}, any, any, {include_modules:boolean | undefined}>,
+    req:Request<{course_id:string}, any, any, {include_modules:boolean}>,
     res:Response<CourseResponse>
 ):Promise<void> => {
     const {course_id} = req.params;
@@ -256,27 +256,35 @@ const getCourse = async (
     try {
         const result = await pool.query<Course>(`
             SELECT 
-                c.*, 
-                CASE WHEN $2::boolean THEN (
-                    SELECT json_agg(
-                        json_build_object(
-                            'module_id', m.module_id, 
-                            'module_title', m.module_title, 
-                            'order_num', m.order_num
-                        )
-                    )
-                    FROM 
-                        modules m 
-                    WHERE m.course_id = c.course_id
-                ) ELSE NULL END AS modules
+                *
             FROM 
                 courses c
             WHERE c.course_id = $1
-        `, [course_id, include_modules]);
+        `, [course_id]);
+
+        let moduleResult:any;
+        if ( include_modules ){
+            moduleResult = await pool.query(`
+            WITH RECURSIVE ordered_modules AS (
+            SELECT 
+                module_title, module_id, description
+            FROM modules 
+            WHERE course_id = $1 AND prev_module_id IS NULL
+            UNION ALL 
+            SELECT 
+                m.module_title, m.module_id, m.description 
+            FROM modules m 
+            INNER JOIN ordered_modules om ON m.prev_module_id = om.module_id
+            WHERE m.course_id = $1
+            ) SELECT * FROM ordered_modules;
+            `, [course_id]);
+        }
+        let modules = include_modules ? moduleResult.rows : null;
         if ( result.rowCount === 0) {
             throw new CustomError('Error in Fetching a course with id ' + course_id, 500);
         }
         const course = result.rows[0];
+        course.modules = include_modules ? modules : null;
         res.status(200).json({
             status: true, 
             message: 'success', 

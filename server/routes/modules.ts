@@ -1,10 +1,13 @@
 import { Router } from "express";
-import { addModule, addResource, addTest, deleteModule, deleteResource, getAllModules, getModule, getTest, updateModule, updateResource, updateTest } from "../controllers/modules";
+import { addModule, addResource, addTest, deleteModule, deleteResource, deleteTest, getAllModules, getModule, getTest, updateModule, updateResource, updateTest } from "../controllers/modules";
+
 
 const router = Router({mergeParams: true});
 
 router.route('/')
 .get(getAllModules)
+
+router.route('/')
 .post(addModule);
 
 router.route('/:module_id')
@@ -16,7 +19,7 @@ router.route('/:module_id/resources')
 .post(addResource);
 
 router.route('/:module_id/resources/:resource_id')
-.patch(updateResource)
+.patch( updateResource)
 .delete(deleteResource);
 
 router.route('/:module_id/tests')
@@ -24,7 +27,8 @@ router.route('/:module_id/tests')
 
 router.route('/:module_id/tests/:test_id')
 .get(getTest)
-.patch(updateTest);
+.patch(updateTest)
+.delete(deleteTest);
 
 
 export default router;

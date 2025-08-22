@@ -9,8 +9,8 @@ const authorizationMiddleware = async (req:Request, res:Response, next:NextFunct
             throw new Error("Invalid token form => Must start with 'Bearer '");
 
         const token = authorization.split(' ')[1];
-        const decoded:{user_name:string | null, user_id:string | null} = jwt.verify(token, process.env.JWT_SECRET as string) as {user_id: string | null, user_name: string | null};
-        if ( decoded.user_id === null || decoded.user_name === null){
+        const decoded:{email:string | null, user_id:string | null} = jwt.verify(token, process.env.JWT_SECRET as string) as {user_id: string | null, email: string | null};
+        if ( decoded.user_id === null || decoded.email === null){
             throw new Error('Invalid token');
         }
         req.body = {...req.body, decoded_user: decoded};

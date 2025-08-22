@@ -4,7 +4,7 @@ import express from "express";
 import cors from 'cors';
 import {Student} from '../types'
 import connectDB from "./db/connectDB";
-import { AuthorizedRouter, ChatRouter, CourseRouter, EnrollmentRouter, ModuleRouter, TestRouter, UserRouter } from './routes';
+import { AuthorizedRouter, ChatRouter, CourseRouter, EnrollmentRouter, ModuleRouter, UserRouter } from './routes';
 import authorizationMiddleware from './middleware/authorization';
 
 
@@ -30,10 +30,9 @@ app.get('/', (req, res) => {
 
 app.use('/api/v1/learning-management/users', UserRouter);
 app.use('/api/v1/learning-management/courses', CourseRouter);
-app.use('/api/v1/learning-management/courses/:course_id/modules', ModuleRouter);
-app.use('/api/v1/learning-management/tests', TestRouter);
-app.use('/api/v1/learning-management/enrollments', EnrollmentRouter);
-app.use('/api/v1/learning-management/chats', ChatRouter);
+app.use('/api/v1/learning-management/courses/:course_id/modules', authorizationMiddleware, ModuleRouter);
+app.use('/api/v1/learning-management/enrollments', authorizationMiddleware, EnrollmentRouter);
+app.use('/api/v1/learning-management/chats', authorizationMiddleware, ChatRouter);
 app.use('/api/v1/learning-management/authorized-user', authorizationMiddleware, AuthorizedRouter);
 
 app.use((req, res) => {

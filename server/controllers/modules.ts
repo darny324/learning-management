@@ -331,7 +331,7 @@ const updateModule = async (
             
             if ( after === null ){
                 const res = await client.query<{module_id:number | null}>(`
-                SELECT module_id FROM modules WHERE prev_module_id IS NULL AND course_id = $1;  
+                SELECT module_id FROM modules WHERE prev_module_id IS NULL AND next_module_id IS NOT NULL AND course_id = $1;  
                 `, [course_id]);
                 if ( res.rowCount === 0 ){
                     throw new Error('Error in updating ordering modules');
@@ -638,6 +638,7 @@ const addTest = async (
             VALUES($1, $2, $3) RETURNING test_id;
         `, [course_id, module_id, order_num]);
         const {rows:returnedRows, rowCount} = result;
+        console.log(returnedRows);
 
         if ( reorder ){
             const reorder_res = await client.query<{
@@ -674,17 +675,21 @@ const addTest = async (
                 throw new CustomError('Correct answer must be a valid index of answers', 400);
             }
             const newAns = answers.map(ans => {
-                return `"${ans}"`;
+                return `'${ans}'`;
             })
             questionValues.push(`
-                ('${question}', ${correct_answer}, '{${newAns.join(',')}}', ${explanation ? `'${explanation}'` : 'null'}, ${returnedRows[0].test_id}) 
+                ('${question}', ${correct_answer}, ARRAY[${newAns.join(',')}], ${explanation ? `'${explanation}'` : 'null'}, ${returnedRows[0].test_id}) 
             `);
         }
         const questionClause = questionValues.join(', ');
+        console.log(questionClause);
         await client.query(`
         INSERT INTO questions(question, correct_answer, answers, explanation, test_id)
         VALUES ${questionClause};
         `);
+        
+
+        client.query('COMMIT;'); 
 
         res.status(200).json({
             status:true, 
@@ -723,8 +728,8 @@ const getTest = async (
         SELECT 
             test_id, order_num 
         FROM tests 
-        WHERE course_id = $1 AND module_id = $2 AND test_id = $3; 
-        `, [course_id, module_id, test_id]);
+        WHERE module_id = $1 AND test_id = $2; 
+        `, [module_id, test_id]);
         if ( result.rowCount === 0 ){
             throw new CustomError('Test not found', 404);
         }
@@ -827,7 +832,7 @@ const updateTest = async (
             if ( question ){
                 updated_question_values.push(`question = '${question}'`);
             }
-            if ( correct_answer ){
+            if ( correct_answer !== undefined && correct_answer !== null ){
                 updated_question_values.push(`correct_answer = ${correct_answer}`);
             }
             if ( answers ){
@@ -857,9 +862,14 @@ const updateTest = async (
                 throw new CustomError('No questions to delete', 400);
             }
             const deletedClause = deleted_questions.join(', ');
-            await pool.query(`
-            DELETE FROM questions WHERE question_id IN (${deletedClause}) AND test_id = $1;  
+            const {rowCount} = await pool.query(`
+            DELETE FROM questions WHERE question_id IN (${deletedClause}) AND test_id = $1 RETURNING *;  
             `, [test_id]);
+
+            if ( rowCount === 0 ){
+                throw new CustomError('No questions detected', 404);
+            }
+
         }
 
         res.status(200).json({
@@ -881,8 +891,46 @@ const updateTest = async (
     }
 }
 
+const deleteTest = async(
+    req:Request<{
+        course_id:string | undefined, 
+        module_id:string | undefined, 
+        test_id:string | undefined, 
+    }>, 
+    res:Response<NormalResponse>
+):Promise<void> => {
+    const {course_id, module_id, test_id} = req.params;
+
+    try {
+        if ( !test_id ){
+            throw new CustomError('Test ID must be provided', 400);
+        }
+
+        await pool.query(`
+        DELETE FROM tests WHERE module_id = $1 AND test_id = $2; 
+        `, [module_id, test_id]);
+
+        res.status(200).json({
+            status:true, 
+            message: 'success', 
+        })
+    } catch (err){
+        let status_code = 404;
+        let message:string = 'Error in getting a test';
+        if ( err instanceof Error ){
+            message = err.message;
+            status_code = err instanceof CustomError ? err.status_code : status_code;
+        }
+        console.log(message, err);
+        res.status(status_code).json({
+            status: false, 
+            message: message, 
+        });
+    }
+}
+
 export { 
     getAllModules, addModule, getModule, updateModule, deleteModule, 
     addResource, updateResource, deleteResource, 
-    addTest, getTest, updateTest
+    addTest, getTest, updateTest, deleteTest
 }

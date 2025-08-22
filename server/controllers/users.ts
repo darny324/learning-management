@@ -57,7 +57,7 @@ type QueryType = {
 
 const getAllUsers = async (
     req:Request<any, any, any, QueryType>, 
-    res:Response<any>
+    res:Response<MultipleUserResponse>
 ):Promise<void> => {
     const {
         name, 
@@ -125,7 +125,10 @@ const getAllUsers = async (
     }
 }
 
-const addUser = async (req:Request<any, any, UserRequest>, res:Response<SingleUserResponse>):Promise<void> => {
+const addUser = async (
+    req:Request<any, any, UserRequest>,
+    res:Response<SingleUserResponse & {token?:string}>
+):Promise<void> => {
     const {
         first_name, 
         last_name, 
@@ -177,10 +180,12 @@ const addUser = async (req:Request<any, any, UserRequest>, res:Response<SingleUs
             throw new CustomError("Inserting new user unsuccessful", 500);
         
         const user = result.rows[0];
-        jwt.sign({user_id:user.user_id, user_name: user.first_name + " " + user.last_name}, process.env.JWT_SECRET as string);
+        const token = jwt.sign({user_id:user.user_id, user_name: user.first_name + " " + user.last_name}, process.env.JWT_SECRET as string);
         res.status(200).json({
             message: "Successful", 
             status: true, 
+            user: user, 
+            token: token, 
         })
     } catch (err){
         if ( err instanceof Error ){
@@ -199,6 +204,50 @@ const addUser = async (req:Request<any, any, UserRequest>, res:Response<SingleUs
             res.status(400).json({
                 status: false, 
                 message: "Error in Adding Student", 
+            });   
+        } 
+    }
+}
+
+const signIn = async (
+    req:Request<any, any, {email: string, password: string}>, 
+    res:Response<SingleUserResponse & {token?:string}>
+) => {
+    const {email, password} = req.body;
+
+    try {
+        const result = await pool.query<User & {password:string}>(`
+        SELECT * FROM users WHERE email = $1; 
+        `, [email]);
+        if ( result.rowCount === 0 ){
+            throw new CustomError('Invalid Email', 404);
+        }
+        const user = result.rows[0];
+        const check = await bcrypt.compare(password, user.password);
+        if ( !check ){
+            throw new CustomError('Invalid Password', 400);
+        }
+
+        const token = jwt.sign({user_id:user.user_id, email: user.email}, process.env.JWT_SECRET as string);
+        res.status(200).json({
+            status: true, 
+            message: 'success', 
+            user: user, 
+            token: token, 
+        });
+    } catch (err){
+        if ( err instanceof Error ){
+            console.log("Error in Signing in => " + err.message + " => ", err);
+            const stauts_code = err instanceof CustomError ? err.status_code : 400;
+            res.status(stauts_code).json({
+                status: false, 
+                message: err.message, 
+            });
+        } else {
+            console.log("Error in Signing in" + " => ", err);
+            res.status(400).json({
+                status: false, 
+                message: "Error in Signing in", 
             });   
         } 
     }
@@ -240,7 +289,7 @@ const getUser = async (
     u.created_at, 
     u.updated_at
     `;
-    if ( show_courses === 'true'){
+    if ( show_courses == 'true'){
         selectFields.push(`
         ${show_num_enrollments === 'true' ? 'COUNT(e.enrollment_id) AS num_enrollments, ' : ''}
         COALESCE(json_agg(
@@ -314,202 +363,5 @@ const getUser = async (
     }
 }
 
-const updateUser = async (
-    req:Request<{user_id:string}, any, UserRequest | null | undefined>, 
-    res:Response<SingleUserResponse>
-):Promise<void> => {
-    if ( !req.body ){
-        res.status(400).json({
-            message: "No field is provided", 
-            status: false, 
-        })
-        return;
-    }
-    const {user_id} = req.params;
-    const {
-        first_name, 
-        last_name, 
-        email, 
-        address, 
-        bios, 
-        interests, 
-        phone_num, 
-        profile_image, 
-        gender, 
-        age, 
-        type_of_user, 
-    } = req.body;
-    const fields:string[] = [];
-    const values:(string|number)[] = [];
-    if (first_name){
-        fields.push('first_name');
-        values.push(first_name);
-    }
-    if ( last_name ){
-        fields.push('last_name');
-        values.push(last_name);
-    }
-    if ( email ){
-        fields.push('email');
-        values.push(email);
-    }
-    if ( bios ){
-        fields.push('bios');
-        values.push(bios);
-    }
-    if ( address ){
-        fields.push('address');
-        values.push(`(${address.x}, ${address.y})`);
-    }
-    if ( phone_num ){
-        fields.push('phone_num');
-        values.push(phone_num);
-    }
-    if ( age ){
-        fields.push('age');
-        values.push(age);
-    }
-    if ( gender ){
-        fields.push('gender');
-        values.push(gender);
-    }
-    if ( interests ){
-        fields.push('interests');
-        values.push(interests);
-    }
-    if ( profile_image ){
-        fields.push('profile_image');
-        values.push(profile_image);
-    }
-    if ( type_of_user ){
-        fields.push('type_of_user');
-        values.push(type_of_user);
-    }
-    
-    const fieldQuery = fields.map((field, index) => {
-        if ( index === fields.length - 1){
-            return `${field} = $${index + 1} `;
-        }
-        return `${field} = $${index + 1}, `;
-    }).join('');
 
-    
-    try {
-        const result = await pool.query<User>(`
-        UPDATE users SET ${fieldQuery}, updated_at = NOW() WHERE user_id = '${user_id}' RETURNING *;
-        `, values);
-        if ( result.rowCount === 0){
-            throw new CustomError("Updating User Failed or Invalid user_id", 500);
-        }
-        
-        const user = result.rows[0];
-        res.status(200).json({
-            message: "Success", 
-            status: true, 
-            user: user,
-        });
-    } catch (err){
-        if ( err instanceof Error ){
-            console.log("Error in Updating stduent => " + err.message + " => ", err);
-            const stauts_code = err instanceof CustomError ? err.status_code : 400;
-            res.status(stauts_code).json({
-                status: false, 
-                message: err.message, 
-            });
-        } else {
-            console.log("Error in Updatig stduent" + " => ", err);
-            res.status(400).json({
-                status: false, 
-                message: "Error in Updating Student", 
-            });   
-        } 
-    }
-
-}
-
-const changePassword = async (
-    req:Request<{user_id:string}, any, {old_password: string, new_password:string} | null | undefined>,
-    res:Response<SingleUserResponse> 
-):Promise<void> => {
-    if ( !req.body ){
-        throw new CustomError("No New Password is provided", 400);
-    }
-    const {user_id} = req.params;
-    const {old_password, new_password} = req.body;
-
-    try {
-        const result = await pool.query<{password:string}>(`
-            SELECT password FROM users WHERE user_id = $1
-            `, [user_id]);
-        if ( result.rowCount === 0){
-            throw new CustomError('No User Found or Error in Changing Password', 404);
-        }
-        const original_password = result.rows[0].password;
-        const check = await bcrypt.compare(old_password, original_password);
-        if ( check ){
-            const result2 = await pool.query<User>(`
-            UPDATE users SET password = $1 WHERE user_id = $2 RETURNING *;
-            `, [new_password, user_id]);
-            if ( result2.rowCount === 0){
-                throw new CustomError("Error in Changing Password", 500);
-            }
-            res.status(200).json({
-                message: "success",
-                status: true, 
-                user: result2.rows[0],
-            })
-        } else {
-            throw new CustomError("Password Incorrect", 400);
-        }
-    } catch (err){
-        if ( err instanceof Error ){
-            console.log("Error in Changing stduent => " + err.message + " => ", err);
-            const stauts_code = err instanceof CustomError ? err.status_code : 400;
-            res.status(stauts_code).json({
-                status: false, 
-                message: err.message, 
-            });
-        } else {
-            console.log("Error in Changing stduent" + " => ", err);
-            res.status(400).json({
-                status: false, 
-                message: "Error in Changing Student", 
-            });   
-        } 
-    }
-}
-
-
-const deleteUser = async (
-    req:Request<{user_id:string}>, 
-    res:Response<NormalResponse>
-):Promise<void> => {
-    const {user_id} = req.params;
-
-    try {
-        await pool.query(`
-        DELETE FROM users WHERE user_id = $1;
-        `, [user_id]); 
-
-        res.status(200).json({
-            status: true, 
-            message: "User deletion successful",
-        });
-    } catch (err) {
-        if ( err instanceof Error ){
-            console.log("Error in deleting user", err.message, err);
-            res.status(500).json({
-                status: false, 
-                message: err.message, 
-            })
-        } else {
-            console.log("Error in Deleting user", err);
-            res.status(500).json({
-                status: false, 
-                message: "Error in deleting user", 
-            })
-        }
-    }
-} 
-
-export {addUser, getAllUsers, getUser, updateUser, changePassword, deleteUser};
+export {addUser, getAllUsers, getUser, signIn};
