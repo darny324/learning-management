@@ -37,7 +37,7 @@ const addChat = async (
         }
 
         const result = await pool.query<Chat>(`
-        INSERT INTO chats(user_id1, user_id2) VALUES($1, $2) RETURNING *; 
+        INSERT INTO chat_box(user_id1, user_id2) VALUES($1, $2) RETURNING *; 
         `, [user_id1, user_id2]);
 
         if ( result.rowCount === 0 ){
@@ -65,15 +65,20 @@ const addChat = async (
 }
 
 const getChat = async (
-    req:Request<{chat_id:string}>, 
+    req:Request<{chat_id:string}, any, {decoded_user: {user_id:string, email:string} | null}>, 
     res:Response<ChatResponse>
 ) => {
     const {chat_id} = req.params;
+    const {decoded_user} = req.body;
     
     try {
+        if ( !decoded_user || !decoded_user.user_id){
+            throw new CustomError('User not authenticated', 401);
+        }
+
         const result = await pool.query<Chat>(`
-        SELECT * FROM chats WHERE chat_id = $1; 
-        `, [chat_id]);
+        SELECT * FROM chat_box WHERE chat_id = $1 AND (user_id1 = $2 OR user_id2 = $2); 
+        `, [chat_id, decoded_user.user_id]);
 
         const messages_result = await pool.query(`
         SELECT message, sender_id, receiver_id, created_at, updated_at 
@@ -117,7 +122,7 @@ const getUserChats = async (
 
         const {user_id} = decoded_user;
         const result = await pool.query<Chat>(`
-        SELECT * FROM chats WHERE user_id1 = $1 OR user_id2 = $1; 
+        SELECT * FROM chat_box WHERE user_id1 = $1 OR user_id2 = $1; 
         `, [user_id]);
 
         const chats:Chat[] = result.rows;
@@ -141,14 +146,18 @@ const getUserChats = async (
 }
 
 const deleteChat = async (
-    req:Request<{chat_id:string}>, 
+    req:Request<{chat_id:string}, any, {decoded_user: {user_id:string, email:string} | null}>, 
     res:Response<NormalResponse>
 ) => {
     const {chat_id} = req.params;
+    const {decoded_user} = req.body;
     try {
+        if ( !decoded_user || !decoded_user.user_id){
+            throw new CustomError('User not authenticated', 401);
+        }
         await pool.query(`
-        DELETE FROM messages WHERE chat_id = $1; 
-        `, [chat_id]);
+        DELETE FROM chat_box WHERE chat_id = $1 AND (sender_id = $2 OR receiver_id = $2); 
+        `, [chat_id, decoded_user.user_id]);
     } catch (err) {
         let status_code = 500;
         let message = 'Error in deleting chat';
@@ -164,35 +173,40 @@ const deleteChat = async (
 }
 
 const sendMessage = async (
-    req:Request<any, any, {chat_id: string, sender_id:string, receiver_id: string, message: string}>, 
+    req:Request<{chat_id:string}, any, {message: string, decoded_user: {user_id:string, email:string}}>, 
     res:Response<NormalResponse & { text_message?:Message | null | {}}>
 ) => {
-    const { chat_id, sender_id, receiver_id, message} = req.body;
+    const {chat_id} = req.params;
+    const {decoded_user, message} = req.body;
     try {
         if ( 
             !chat_id || 
-            !sender_id || 
-            !receiver_id ||
+            !decoded_user || 
+            !decoded_user.user_id ||
             !message 
         ) {
             throw new CustomError('chat_id, sender_id, receiver_id and message are required', 400);
         }
 
         const {rows:chats, rowCount} = await pool.query<Chat>(`
-        SELECT chat_id, sender_id, receiver_id FROM chats 
+        SELECT chat_id, user_id1, user_id2 FROM chat_box
         WHERE chat_id = $1; 
-        `);
+        `, [chat_id]);
         if ( rowCount === 0 )
             throw new CustomError('Chat not found', 404);
 
         const chat = chats[0];
-        if ( sender_id !== chat.user_id1 && sender_id !== chat.user_id2)
-            throw new CustomError('Sender is not part of the chat', 403);
-        if ( receiver_id !== chat.user_id1 && receiver_id !== chat.user_id2)
-            throw new CustomError('Receiver is not part of the chat', 403);
-        
-        if ( sender_id === receiver_id )
-            throw new CustomError('Sender and receiver cannot be the same', 400);
+        let sender_id:string;
+        let receiver_id:string;
+        if ( chat.user_id1 === decoded_user.user_id ){
+            sender_id = chat.user_id1;
+            receiver_id = chat.user_id2;
+        } else if ( chat.user_id2 === decoded_user.user_id ){
+            sender_id = chat.user_id2;
+            receiver_id = chat.user_id1;
+        } else {
+            throw new CustomError("Error in validating user ids", 401);
+        }
 
         const result = await pool.query<Message>(`
         INSERT INTO messages(chat_id, sender_id, receiver_id, message) 
@@ -219,25 +233,30 @@ const sendMessage = async (
 }
 
 const editMessage = async (
-    req:Request<{message_id: string}, any, {chat_id: string, sender_id:string, new_message: string}>, 
+    req:Request<{message_id: string, chat_id:string}, any, {decoded_user: {user_id:string, email:string} | null, new_message: string}>, 
     res:Response<NormalResponse & { text_message?:Message | null | {}}>
 ) => {
     const message_id:number = parseInt(req.params.message_id);
-    const {chat_id, sender_id, new_message} = req.body;
+    const { decoded_user, new_message} = req.body;
+    const {chat_id} = req.params;
     try {
         if (
             !chat_id || 
-            !sender_id || 
+            !decoded_user ||
+            !decoded_user.user_id || 
             !new_message
         ){
             throw new CustomError('chat_id, sender_id and new_message are required', 400);
+        }
+        if ( isNaN(message_id) || message_id <= 0 ){
+            throw new CustomError('Valid message_id is required', 400); 
         }
 
         const result = await pool.query(`
         UPDATE messages SET message = $1, updated_at = NOW()
         WHERE message_id = $2 AND chat_id = $3 AND sender_id = $4
         RETURNING message, sender_id, receiver_id, created_at, updated_at;
-        `, [new_message, message_id, chat_id, sender_id]);
+        `, [new_message, message_id, chat_id, decoded_user.user_id]);
 
         if ( result.rowCount === 0 ){
             throw new CustomError('Message not found or you are not authorized to edit this message', 404);
@@ -260,4 +279,55 @@ const editMessage = async (
             message: msg, 
         })
     }
+}
+
+const deleteMessage = async (
+    req:Request<{message_id: string, chat_id:string}, any, {decoded_user: {user_id:string, email:string} | null}>, 
+    res:Response<NormalResponse>
+) => {
+    const message_id:number = parseInt(req.params.message_id);
+    const {decoded_user} = req.body;
+    const {chat_id} = req.params;
+
+    try {
+        if ( !decoded_user || !decoded_user.user_id){
+            throw new CustomError('User not authenticated', 401);
+        }
+        if ( !chat_id){
+            throw new CustomError('chat_id are required', 400);
+        }
+        if ( !message_id || isNaN(message_id) || message_id <= 0 ){
+            throw new CustomError('Valid message_id is required', 400);
+        }
+
+        await pool.query(`
+        DELETE FROM messages WHERE message_id = $1 AND chat_id = $2 AND sender_id = $3; 
+        `, [message_id, chat_id, decoded_user.user_id]);
+
+        res.status(200).json({
+            status: true, 
+            message: 'success', 
+        })
+    } catch (err) {
+        let status_code = 500;
+        let msg = 'Error in deleting message';
+        if ( err instanceof Error) 
+            msg = err.message;
+        if ( err instanceof CustomError)
+            status_code = err.status_code;
+        res.status(status_code).json({
+            status: false, 
+            message: msg, 
+        })
+    }
+}
+
+export {
+    addChat, 
+    getChat, 
+    getUserChats, 
+    deleteChat, 
+    sendMessage, 
+    editMessage, 
+    deleteMessage
 }
