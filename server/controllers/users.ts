@@ -5,6 +5,10 @@ import CustomError from "../error/custom_error";
 import { PoolClient } from "pg";
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt'
+import { Profile } from "passport";
+import transporter from "../node_mailer";
+import { SendMailOptions } from "nodemailer";
+
 
 type User = {
     user_id: string, 
@@ -25,6 +29,7 @@ type User = {
     address: {x:number, y:number}, // latitude is x and longitude is y
     created_at: string, 
     updated_at: string,
+    provider: string, 
 }
 
 type MultipleUserResponse = NormalResponse & {users?: User[] | null};
@@ -53,6 +58,16 @@ type QueryType = {
     type_of_user: 'teacher' | 'student' | undefined, 
     fields: string | undefined, 
 };
+
+const createCode = ():number => {
+    let num = Math.random() * 1000000;
+    while ( num < 100000){
+        num *= 10;
+    }
+    num = Math.round(num);
+    return num;
+}
+const codes:Map<string, number> = new Map();
 
 
 const getAllUsers = async (
@@ -122,6 +137,89 @@ const getAllUsers = async (
             status: false, 
             message: message, 
         });
+    }
+}
+
+const GetSmartCode = async (
+    req:Request<any, any, {email: string}> , 
+    res:Response<NormalResponse & {IsEmailExist:boolean, response?:string}>
+) => {
+    const {email} = req.body;
+    try {
+        if ( !email ){
+            throw new CustomError('Email must be provided', 400);
+        }
+        const code = createCode();
+        codes.set(email, code);
+        const options:SendMailOptions = {
+            from: process.env.GMAIL as string, 
+            to: email, 
+            subject: 'Email Identification', 
+            html: `
+            <h2>Smarty Learning Platform</h2>
+            <span>
+                <span>otp - </span>
+                <b>${code}</b>
+                </br>
+                <span>The code will expire in 1 minute</span>
+            </span>
+            `, 
+        }
+
+        const response = await transporter.sendMail(options);
+
+        setTimeout(() => {
+            codes.delete(email);
+        }, 60 * 1000);
+        res.status(200).json({
+            status: true, 
+            message: 'success', 
+            IsEmailExist: true, 
+            response: response.response,
+        });
+    } catch (err){
+        let message = "Error in Validating email";
+        let status_code = 500;
+        if ( err instanceof Error ){
+            message = err.message;
+            if ( err instanceof CustomError )status_code = err.status_code;
+        }
+        res.status(status_code).json({
+            status:false, 
+            message: message, 
+            IsEmailExist: false, 
+        })
+    }
+}
+
+const VerifyCode = async(
+    req:Request<any, any, {email:string, code:number}>, 
+    res:Response<NormalResponse>
+) => {
+    const {code, email} = req.body;
+    try {
+        if (!code || !email)throw Error('6 digit Code and Email must be provided');
+
+        const pre_code = codes.get(email);
+        if ( !pre_code )throw Error("Code Expired or There is no code with this email");
+
+        if ( pre_code !== code) throw Error("Mismatch Code");
+        res.status(200).json({
+            status:true, 
+            message: 'success'
+        });
+        
+    } catch (err) {
+        let message = "Error in Verifying Code";
+        let status_code = 500;
+        if ( err instanceof Error ){
+            message = err.message;
+            if ( err instanceof CustomError )status_code = err.status_code;
+        }
+        res.status(status_code).json({
+            status:false, 
+            message: message, 
+        })
     }
 }
 
@@ -223,6 +321,8 @@ const signIn = async (
             throw new CustomError('Invalid Email', 404);
         }
         const user = result.rows[0];
+        if ( user.provider === 'google')
+            throw Error('This Account is registered with google account');
         const check = await bcrypt.compare(password, user.password);
         if ( !check ){
             throw new CustomError('Invalid Password', 400);
@@ -363,5 +463,47 @@ const getUser = async (
     }
 }
 
+const loginGoogle = async (
+    req:Request<{redirect_url?:string}>, 
+    res:Response
+) => {
+    let {redirect_url} = req.params;
+    const {IsSignIn, profile, user} = req.user as { IsSignIn:boolean, profile:Profile, user:any};
+    
+    try {
+        if ( !req.user) {
+            throw Error('Error in authrozing');
+        }
+        if ( !redirect_url ){
+            redirect_url = process.env.GOOGLE_LOGIN_SUCCESS;
+        }
+        if ( IsSignIn ){
+            const token = jwt.sign({email:user.email as string, user_id:user.user_id as string}, 
+                process.env.JWT_SECRET as string);
+            res.redirect(`${redirect_url}?token=${token}`);
+            return;
+        } else {
+            let email, first_name, last_name;
+            if ( profile.emails ){
+                email = profile.emails[0].value;
+            }
+            if ( profile.name ){
+                first_name = profile.name.givenName;
+                last_name = profile.name.familyName;
+            }
+            if ( !redirect_url){
+                redirect_url = process.env.GOOGLE_SIGN_UP;
+            }
+            res.redirect(`${redirect_url}?email=${email}&first_name=${first_name}&last_name=${last_name}`);
+            return;
+        }
+    } catch (err){
+        console.log(err instanceof Error ? err.message : 'Error in google login');
+        if ( !redirect_url )
+            redirect_url = process.env.GOOGLE_LOGIN_FAIL as string;
+        res.redirect(redirect_url as string);
+        return;
+    }
+}
 
-export {addUser, getAllUsers, getUser, signIn};
+export {addUser, getAllUsers, getUser, signIn, loginGoogle, GetSmartCode, VerifyCode};
